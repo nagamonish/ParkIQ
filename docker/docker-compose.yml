@@ -1,0 +1,94 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-parkiq}:${DB_PASSWORD:-parkiq}@postgres:5432/${DB_NAME:-parkiq}
+      REDIS_URL: redis://redis:6379
+      MODEL_PATH: /models/yolov8m-obb.pt
+      IOU_THRESHOLD: "0.40"
+      CONFIDENCE_THRESHOLD: "0.45"
+      SMOOTHING_WINDOW: "5"
+      # Publish this site's aggregate availability up to the Sightline cloud.
+      CLOUD_INGEST_URL: http://cloud:8001/api/ingest
+      SIGHTLINE_SITE_ID: ${SIGHTLINE_SITE_ID:-demo-site}
+      SIGHTLINE_API_KEY: ${SIGHTLINE_API_KEY:-}
+      SITE_NAME: ${SITE_NAME:-}
+      SITE_TYPE: ${SITE_TYPE:-garage}
+      SITE_CITY: ${SITE_CITY:-}
+      SITE_LAT: ${SITE_LAT:-}
+      SITE_LNG: ${SITE_LNG:-}
+    volumes:
+      - ../models:/models
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8000:8000"
+
+  # ---- Sightline public cloud (aggregation API consumed by the public site) --
+  cloud:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.cloud
+    environment:
+      CLOUD_DATABASE_URL: postgresql://${DB_USER:-parkiq}:${DB_PASSWORD:-parkiq}@postgres:5432/${DB_NAME:-parkiq}
+      CLOUD_CORS_ORIGINS: ${CLOUD_CORS_ORIGINS:-*}
+      # Set a token to require X-API-Key on /api/ingest (recommended in prod).
+      CLOUD_INGEST_TOKEN: ${CLOUD_INGEST_TOKEN:-}
+    depends_on:
+      - postgres
+    ports:
+      - "8001:8001"
+
+  # ---- Sightline public website (separate from the operator dashboard) -------
+  sightline:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.sightline
+    depends_on:
+      - cloud
+    ports:
+      - "8080:80"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_API_URL: /api
+        VITE_WS_URL: ws://localhost/ws
+    depends_on:
+      - backend
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_NAME:-parkiq}
+      POSTGRES_USER: ${DB_USER:-parkiq}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-parkiq}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../scripts/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ../scripts/cloud_schema.sql:/docker-entrypoint-initdb.d/002-cloud-schema.sql:ro
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres-data:
